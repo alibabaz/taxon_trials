@@ -6,7 +6,8 @@ import h5py
 import torch.nn as nn
 
 __all__ = ['get_conv_bn', 'get_base_layer', 'get_head_layer',
-          'get_sq_ex', 'get_dep_sep', 'get_inv_res']
+          'get_sq_ex', 'get_dep_sep', 'get_inv_res', 'conv',
+          'get_eff_b0']
 
 
 def get_base_layer(in_ch=1, out_ch=32, ks=3, stride=2, padding=1):
@@ -62,4 +63,54 @@ def get_inv_res(in_ch, mid_ch, out_ch, sq_ch=4, ks=1, stride=1, padding=1):
              padding=padding, activation=True),
         get_sq_ex((mid_ch,sq_ch), (sq_ch, mid_ch) ,ks=(1,1), stride=(1,1)),
         conv(in_ch=mid_ch, out_ch=out_ch, ks=1, stride=1)
+    )
+
+
+def get_eff_b0(out_feats):
+    return nn.Sequential(
+        get_base_layer(),
+        get_dep_sep(32, 16),
+
+        #layer 1 has two inverted residuals (IRs)
+        get_inv_res(in_ch=16, mid_ch=96, out_ch=24,
+                   sq_ch=4, ks=3, stride=2, padding=1),
+        get_inv_res(in_ch=24, mid_ch=144, out_ch=24,
+                   sq_ch=6, ks=3, stride=1, padding=1),
+
+        #layers 2 has 2 IR's
+        get_inv_res(in_ch=24, mid_ch=144, out_ch=40,
+                   sq_ch=6, ks=5, stride=2, padding=2),
+        get_inv_res(in_ch=40, mid_ch=240, out_ch=40,
+                   sq_ch=10, ks=5, stride=2, padding=2),
+
+        #layer 3 has 3 IR's
+        get_inv_res(in_ch=40, mid_ch=240, out_ch=80,
+                   sq_ch=10, ks=3, stride=2, padding=1),
+        get_inv_res(in_ch=80, mid_ch=480, out_ch=80,
+                   sq_ch=20, ks=3, stride=1, padding=1),
+        get_inv_res(in_ch=80, mid_ch=480, out_ch=80,
+                   sq_ch=20, ks=3, stride=1, padding=1),
+
+        #layer 4 has 3 inverted residuals
+        get_inv_res(in_ch=80, mid_ch=480, out_ch=112,
+                   sq_ch=20, ks=5, stride=1, padding=2),
+        get_inv_res(in_ch=112, mid_ch=672, out_ch=112,
+                   sq_ch=28, ks=5, stride=1, padding=2),
+        get_inv_res(in_ch=112, mid_ch=672, out_ch=112,
+                   sq_ch=28, ks=5, stride=1, padding=2),
+
+        #layer 5 has 4 inverted residuals
+        get_inv_res(in_ch=112, mid_ch=672, out_ch=192,
+                   sq_ch=28, ks=5, stride=2, padding=2),
+        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
+                   sq_ch=48, ks=5, stride=1, padding=2),
+        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
+                   sq_ch=48, ks=5, stride=1, padding=2),
+        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
+                   sq_ch=48, ks=5, stride=1, padding=2),
+        #layer 6 has 1 IR
+        get_inv_res(in_ch=192, mid_ch=1152, out_ch=320,
+                   sq_ch=48, ks=3, stride=1, padding=1),
+
+        get_head_layer(out_chans=out_feats)
     )
