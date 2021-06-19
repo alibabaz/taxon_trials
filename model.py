@@ -5,112 +5,128 @@ import os
 import h5py
 import torch.nn as nn
 
-__all__ = ['get_conv_bn', 'get_base_layer', 'get_head_layer',
-          'get_sq_ex', 'get_dep_sep', 'get_inv_res', 'conv',
-          'get_eff_b0']
+__all__ = ['DepSepBlock', 'InvertedResidualBlock', 'SqueezeExcite',
+          'EffNet_b0']
 
 
-def get_base_layer(in_ch=1, out_ch=32, ks=3, stride=2, padding=1):
-    return conv(in_ch=in_ch, out_ch=out_ch, ks=ks, 
-               stride=stride, padding=padding, activation=True)
 
+class DepSepBlock(nn.Module):
+    def __init__(self):
+        super(DepSepBlock, self).__init__()
+        self.conv1 = nn.Conv1d(32, 32, 3)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.act = nn.SiLU(inplace=True)
+        self.conv2 = nn.Conv1d(32, 8, 1)
+        self.conv3 = nn.Conv1d(8, 32, 1)
+        self.conv4 = nn.Conv1d(32, 16, 1, stride=1)
+        self.bn2 = nn.BatchNorm1d(16)
+    
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.act(out)
+        out = self.conv2(out)
+        out = self.act(out)
+        out = self.conv3(out)
+        out = self.conv4(out)
+        out = self.bn2(out)
+        #out = nn.Identity(out)
+        
+        return out
 
-def get_head_layer(in_chans=320, out_chans=1280, ks=1, stride=1,
-              avg_out_feats=200, lin_out_feats=1):
-    return nn.Sequential(
-        conv(in_chans, out_chans, ks, stride, activation=True),
-        nn.AdaptiveAvgPool1d(output_size=avg_out_feats),
-        nn.Linear(in_features=avg_out_feats, out_features=lin_out_feats))
+    
+class InvertedResidualBlock(nn.Module):
+    def __init__(self, in_ch:int, mid_ch:int, sq_ch:int,
+                 out_ch:int, ks=1, stride: int = 1, padding: int =0):
+        super(InvertedResidualBlock, self).__init__()
+        
+        self.conv1 = nn.Conv1d(in_ch, mid_ch, kernel_size=1, stride=1)
+        self.bn1 = nn.BatchNorm1d(mid_ch)
+        self.act = nn.SiLU(inplace=True)
+        self.conv2 = nn.Conv1d(mid_ch, mid_ch, kernel_size=ks, stride=stride,
+                              padding=padding)
+        self.bn2 = nn.BatchNorm1d(mid_ch)
+        self.squeeze = SqueezeExcite(mid_ch, sq_ch)
+        self.conv5 = nn.Conv1d(mid_ch, out_ch, kernel_size=1, stride=1) 
+        self.bn3 = nn.BatchNorm1d(out_ch)
+        
+        self.downsample = nn.Conv1d(in_ch, out_ch,1, stride=stride)
+        
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.act(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.squeeze(out)
+        out = self.conv5(out)
+        out = self.bn3(out)
+        
+        identity = self.downsample(x)
+        out += identity
+        out = self.act(out)
+        
+        return out
 
+    
+class SqueezeExcite(nn.Module):
+    def __init__(self, ch_in, mid_ch):
+        super().__init__()
+        self.layer = nn.Sequential(
+            nn.Conv1d(ch_in, mid_ch, kernel_size=1, stride=1),
+            nn.SiLU(inplace=True),
+            nn.Conv1d(mid_ch, ch_in, kernel_size=1, stride=1)
+        )
+    def forward(self, x):
+        out = self.layer(x)
+        return out + x
+    
+    
+class EffNet_b0(nn.Module):
+    def __init__(self, param_list, avg_out=200, out_feats=512, n_classes=18):
+        super(EffNet_b0, self).__init__()
+        
+        self.avg_out = avg_out
+        self.out_feats = out_feats
+        self.n_classes = n_classes
+        self.param_list = param_list
 
-def get_conv_bn(in_ch=1, out_ch=2, ks=2, stride=2, padding=None):
-    return nn.Sequential(
-        nn.Conv1d(in_channels = in_ch, out_channels = out_ch,
-                 kernel_size = ks, stride = stride, 
-                  padding=padding, bias=False),
-        nn.BatchNorm1d(num_features = out_ch)
-    )
-
-def conv(in_ch, out_ch, ks, stride, padding=0, activation=False):
-    res = get_conv_bn(in_ch, out_ch, ks, stride, padding)
-    if activation:
-        res = nn.Sequential(res, nn.SiLU(inplace=True))
-    return res
-
-
-def get_sq_ex(in_ch= (1,1), out_ch= (2,2), ks= (2,2), stride= (2,2)):
-    return nn.Sequential(
-        nn.Conv1d(in_channels= in_ch[0], out_channels= out_ch[0], 
-                  kernel_size= ks[0], stride= stride[0]),
-        nn.SiLU(),
-        nn.Conv1d(in_channels= in_ch[1], out_channels= out_ch[1], 
-                  kernel_size= ks[1], stride= stride[1])
-    )
-
-def get_dep_sep(in_ch, out_ch, ks=3, mid_ch=8):
-    return nn.Sequential(
-        conv(in_ch=in_ch, out_ch=in_ch, ks=ks, stride=1, activation=True),
-        get_sq_ex(in_ch=(in_ch, mid_ch), 
-                  out_ch=(mid_ch, in_ch)),
-        conv(in_ch=in_ch, out_ch=out_ch, ks=1, stride=1),
-        nn.Identity()
-    )
-
-def get_inv_res(in_ch, mid_ch, out_ch, sq_ch=4, ks=1, stride=1, padding=1):
-    return nn.Sequential(
-        conv(in_ch=in_ch, out_ch=mid_ch, ks=1, stride=1, activation=True),
-        conv(in_ch=mid_ch, out_ch=mid_ch, ks=ks, stride=stride, 
-             padding=padding, activation=True),
-        get_sq_ex((mid_ch,sq_ch), (sq_ch, mid_ch) ,ks=(1,1), stride=(1,1)),
-        conv(in_ch=mid_ch, out_ch=out_ch, ks=1, stride=1)
-    )
-
-
-def get_eff_b0(out_feats):
-    return nn.Sequential(
-        get_base_layer(),
-        get_dep_sep(32, 16),
-
-        #layer 1 has two inverted residuals (IRs)
-        get_inv_res(in_ch=16, mid_ch=96, out_ch=24,
-                   sq_ch=4, ks=3, stride=2, padding=1),
-        get_inv_res(in_ch=24, mid_ch=144, out_ch=24,
-                   sq_ch=6, ks=3, stride=1, padding=1),
-
-        #layers 2 has 2 IR's
-        get_inv_res(in_ch=24, mid_ch=144, out_ch=40,
-                   sq_ch=6, ks=5, stride=2, padding=2),
-        get_inv_res(in_ch=40, mid_ch=240, out_ch=40,
-                   sq_ch=10, ks=5, stride=2, padding=2),
-
-        #layer 3 has 3 IR's
-        get_inv_res(in_ch=40, mid_ch=240, out_ch=80,
-                   sq_ch=10, ks=3, stride=2, padding=1),
-        get_inv_res(in_ch=80, mid_ch=480, out_ch=80,
-                   sq_ch=20, ks=3, stride=1, padding=1),
-        get_inv_res(in_ch=80, mid_ch=480, out_ch=80,
-                   sq_ch=20, ks=3, stride=1, padding=1),
-
-        #layer 4 has 3 inverted residuals
-        get_inv_res(in_ch=80, mid_ch=480, out_ch=112,
-                   sq_ch=20, ks=5, stride=1, padding=2),
-        get_inv_res(in_ch=112, mid_ch=672, out_ch=112,
-                   sq_ch=28, ks=5, stride=1, padding=2),
-        get_inv_res(in_ch=112, mid_ch=672, out_ch=112,
-                   sq_ch=28, ks=5, stride=1, padding=2),
-
-        #layer 5 has 4 inverted residuals
-        get_inv_res(in_ch=112, mid_ch=672, out_ch=192,
-                   sq_ch=28, ks=5, stride=2, padding=2),
-        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
-                   sq_ch=48, ks=5, stride=1, padding=2),
-        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
-                   sq_ch=48, ks=5, stride=1, padding=2),
-        get_inv_res(in_ch=192, mid_ch=1152, out_ch=192,
-                   sq_ch=48, ks=5, stride=1, padding=2),
-        #layer 6 has 1 IR
-        get_inv_res(in_ch=192, mid_ch=1152, out_ch=320,
-                   sq_ch=48, ks=3, stride=1, padding=1),
-
-        get_head_layer(out_chans=out_feats)
-    )
+        self.conv1 = nn.Conv1d(1, 32, kernel_size=3, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.silu = nn.SiLU(inplace=True)
+        self.layer0 = DepSepBlock()
+        self.layer_list = []
+        for x in range(len(self.param_list)):
+            self.layer_list.append(self._make_layer(self.param_list[x]))
+        self.layer_list = nn.Sequential(*self.layer_list)
+        self.conv2 = nn.Conv1d(320, self.n_classes, 1, 1)
+        self.bn2 = nn.BatchNorm1d(self.n_classes)
+        self.avgpool = nn.AdaptiveAvgPool1d(output_size=self.avg_out)
+        self.fc = nn.Linear(in_features=self.avg_out, 
+                            out_features=self.out_feats)
+    
+    def _make_layer(self, param_list):
+        layers = []
+        for x in range(len(param_list)):
+            layers.append(InvertedResidualBlock(*param_list[x]))
+        return nn.Sequential(*layers)
+        
+    def _forward_impl(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.silu(x)
+        
+        x = self.layer0(x)
+        x = self.layer_list(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.avgpool(x)
+        x = self.fc(x)
+        return x
+    
+    def forward(self, x):
+        return self._forward_impl(x)
