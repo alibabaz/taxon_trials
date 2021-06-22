@@ -8,17 +8,29 @@ import torch.nn as nn
 __all__ = ['DepSepBlock', 'InvertedResidualBlock', 'SqueezeExcite',
           'EffNet_b0']
 
+p_list = [
+        [[16,96,3,24,3,2,1], [24,144,6,24,3,1,1]], #layer 1
+        [[24,144,6,40,5,2,2], [40,240,10,40,5,1,2]], #layer 2 
+        [[40,240,10,80,3,2,1],[80,480,20,80,3,1,1], 
+                                [80,480,20,80,3,1,1]], #layer 3
+        [[80,480,20,112,5,1,2], [112,672,28,112,5,1,2], 
+                                 [112,672,28,112,5,1,2]], #layer 4
+        [[112,672,28,192,5,2,2],[192,1152,48,192,5,1,2],
+         [192,1152,48,192,5,1,2], [192,1152,48,192,5,1,2]], #layer 5
+        [[192,1152,48,320,3,2,1]] #layer 6
+         ]
+
 
 
 class DepSepBlock(nn.Module):
     def __init__(self):
         super(DepSepBlock, self).__init__()
-        self.conv1 = nn.Conv1d(32, 32, 3)
+        self.conv1 = nn.Conv1d(32, 32, 3, bias=False, groups=32)
         self.bn1 = nn.BatchNorm1d(32)
         self.act = nn.SiLU(inplace=True)
         self.conv2 = nn.Conv1d(32, 8, 1)
         self.conv3 = nn.Conv1d(8, 32, 1)
-        self.conv4 = nn.Conv1d(32, 16, 1, stride=1)
+        self.conv4 = nn.Conv1d(32, 16, 1, stride=1, bias=False)
         self.bn2 = nn.BatchNorm1d(16)
     
     def forward(self, x):
@@ -42,14 +54,14 @@ class InvertedResidualBlock(nn.Module):
                  out_ch:int, ks=1, stride: int = 1, padding: int =0):
         super(InvertedResidualBlock, self).__init__()
         
-        self.conv1 = nn.Conv1d(in_ch, mid_ch, kernel_size=1, stride=1)
+        self.conv1 = nn.Conv1d(in_ch, mid_ch, kernel_size=1, stride=1, bias=False)
         self.bn1 = nn.BatchNorm1d(mid_ch)
         self.act = nn.SiLU(inplace=True)
         self.conv2 = nn.Conv1d(mid_ch, mid_ch, kernel_size=ks, stride=stride,
-                              padding=padding)
+                              padding=padding, groups=mid_ch, bias=False)
         self.bn2 = nn.BatchNorm1d(mid_ch)
         self.squeeze = SqueezeExcite(mid_ch, sq_ch)
-        self.conv5 = nn.Conv1d(mid_ch, out_ch, kernel_size=1, stride=1) 
+        self.conv5 = nn.Conv1d(mid_ch, out_ch, kernel_size=1, stride=1, bias=False) 
         self.bn3 = nn.BatchNorm1d(out_ch)
         
         self.downsample = nn.Conv1d(in_ch, out_ch,1, stride=stride)
@@ -87,7 +99,7 @@ class SqueezeExcite(nn.Module):
     
     
 class EffNet_b0(nn.Module):
-    def __init__(self, param_list, avg_out=200, out_feats=512, n_classes=18):
+    def __init__(self, param_list=p_list, avg_out=200, out_feats=512, n_classes=18):
         super(EffNet_b0, self).__init__()
         
         self.avg_out = avg_out
@@ -108,6 +120,16 @@ class EffNet_b0(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool1d(output_size=self.avg_out)
         self.fc = nn.Linear(in_features=self.avg_out, 
                             out_features=self.out_feats)
+        
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                #nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                fan_out = m.kernel_size[0] * m.out_channels
+                nn.init.normal_(m.weight, mean=0, std=(np.sqrt(2/fan_out)))
+                #.kernel_size[0] * m.conv1.out_channels
+            elif isinstance(m, (nn.BatchNorm1d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
     
     def _make_layer(self, param_list):
         layers = []
