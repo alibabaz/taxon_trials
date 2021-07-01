@@ -1,5 +1,8 @@
+cori_output/
 data/
 model/
+models/
+ar122_r202.rep.h5
 #. Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
