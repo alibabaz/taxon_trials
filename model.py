@@ -99,14 +99,16 @@ class SqueezeExcite(nn.Module):
     
     
 class EffNet_b0(nn.Module):
-    def __init__(self, param_list=p_list, avg_out=200, out_feats=512, n_classes=18):
+    def __init__(self, param_list=p_list, avg_out=200, out_feats=512, 
+                 n_classes=1, custom_head=True):
         super(EffNet_b0, self).__init__()
         
         self.avg_out = avg_out
         self.out_feats = out_feats
         self.n_classes = n_classes
         self.param_list = param_list
-
+        
+        self.custom_head = custom_head
         self.conv1 = nn.Conv1d(1, 32, kernel_size=3, stride=2, padding=1)
         self.bn1 = nn.BatchNorm1d(32)
         self.silu = nn.SiLU(inplace=True)
@@ -147,7 +149,8 @@ class EffNet_b0(nn.Module):
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.avgpool(x)
-        x = self.fc(x)
+        if(self.custom_head):
+            x = self.fc(x)
         return x
     
     def forward(self, x):
